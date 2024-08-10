@@ -4,6 +4,7 @@ import readline from 'readline';
 
 import type { ProjectInfo } from './types';
 import { replaceInFile, withTempDir } from './io-util';
+import resolveGitInfo from './resolver';
 
 /**
  * For interacting with stdin/stdout
@@ -41,19 +42,39 @@ const question = (
 const fetchInfo = async (
   cleanup: () => void | unknown,
 ): Promise<ProjectInfo> => {
-  const name = await question('Name? (This will go on the LICENSE)\n=> ');
-  const email = await question('Email?\n=> ', [
-    {
-      validate: (s: string) => /.+@.+\..+/.test(s),
-      onError: () => console.log('Invalid email!'),
-    },
-  ]);
+  const resolved = await resolveGitInfo();
+
+  // Ask user
+  const name = await question(
+    `Name? (This will go on the LICENSE)${resolved.name ? ` [Resolved: ${resolved.name}]` : ''}\n=> `,
+  )
+    .then((val) => val.trim())
+    .then((val) => (val.length ? val : resolved.name ?? ''));
+
+  const email = await question(
+    `Email?${resolved.email ? ` [Resolved: ${resolved.email}]` : ''}\n=> `,
+    [
+      {
+        validate: (s: string) => !!resolved.email || /.+@.+\..+/.test(s),
+        onError: () => console.log('Invalid email!'),
+      },
+    ],
+  )
+    .then((val) => val.trim())
+    .then((val) => (val.length ? val : resolved.email ?? ''));
+
   const username = await question(
-    'Username? (https://github.com/<username>)\n=> ',
-  );
+    `Username? (https://github.com/<username>)${resolved.org ? ` [Resolved: ${resolved.org}]` : ''}\n=> `,
+  )
+    .then((val) => val.trim())
+    .then((val) => (val.length ? val : resolved.org ?? ''));
+
   const repository = await question(
-    'Repository? ((https://github.com/$username/<repo>\n=> ',
-  );
+    `Repository? (https://github.com/${username}/<repo>)${resolved.repo ? ` [Resolved: ${resolved.repo}]` : ''}\n=> `,
+  )
+    .then((val) => val.trim())
+    .then((val) => (val.length ? val : resolved.repo ?? ''));
+
   const proj_name = await question('Project name?\n=> ');
   const proj_short_desc = await question('Short description?\n=> ');
   const proj_long_desc = await question('Long description?\n=> ');
@@ -126,16 +147,18 @@ const { func: main } = withTempDir(
 
     // Use async
     await Promise.all(
-      filesToUpdate.map((filename) => async () => {
-        const filePath = path.join('./template', filename);
+      filesToUpdate.map((filename) =>
+        (async () => {
+          const filePath = path.join('./template', filename);
 
-        const fileInfo = fs.statSync(filePath);
-        if (fileInfo.isDirectory()) {
-          return;
-        }
+          const fileInfo = fs.statSync(filePath);
+          if (fileInfo.isDirectory()) {
+            return;
+          }
 
-        await replaceInFile(filePath, tempDir, data);
-      }),
+          await replaceInFile(filePath, tempDir, data);
+        })(),
+      ),
     );
 
     // Write CODEOWNERS
@@ -167,6 +190,9 @@ const { func: main } = withTempDir(
     // ################# //
     // Stage 3: Clean up //
     // ################# //
+    // Only add `force: true` for files or directories that
+    // will only exist if some development task was carried out
+    // like eslintcache
     console.log('Cleaning up...');
 
     // Js
@@ -182,10 +208,10 @@ const { func: main } = withTempDir(
     fs.rmSync('tests', { recursive: true });
 
     // Linting
-    fs.unlinkSync('.eslintcache');
     fs.unlinkSync('.eslintignore');
     fs.unlinkSync('.prettierignore');
     fs.unlinkSync('eslint.config.mjs');
+    fs.rmSync('.eslintcache', { force: true });
 
     // Syncing
     fs.unlinkSync('.templatesyncignore');
@@ -194,11 +220,14 @@ const { func: main } = withTempDir(
     fs.unlinkSync('.gitignore');
 
     // Node
-    fs.rmSync('node_modules', { recursive: true });
+    fs.rmSync('node_modules', { recursive: true, force: true });
 
     // Clean up dist
     fs.unlinkSync(__filename);
     fs.rmSync('dist', { recursive: true });
+
+    // Assets
+    fs.rmSync('assets', { recursive: true });
 
     // Generate src and test
     fs.mkdirSync('src');
